@@ -389,6 +389,13 @@ func probeRegion(ctx context.Context, proxy C.Proxy) (string, string) {
 	transport := &http.Transport{
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			var meta C.Metadata
+			// NetWork=TCP and Type=HTTP are already the zero values, and
+			// mihomo's own probe builder (adapter.urlToMetadata, used by
+			// every url-test/fallback health check) relies on exactly that.
+			// Set them explicitly anyway so the dial's intent is self-
+			// documenting and independent of enum iota ordering.
+			meta.NetWork = C.TCP
+			meta.Type = C.HTTP
 			if err := meta.SetRemoteAddress(address); err != nil {
 				return nil, err
 			}
