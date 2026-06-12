@@ -95,7 +95,7 @@ func TestRegionStoreStaleKeep(t *testing.T) {
 	if !s.claim("a", time.Hour) {
 		t.Fatal("first claim must succeed")
 	}
-	s.release("a", geoSplitClassUnknown)
+	s.release("a", geoSplitClassUnknown, "")
 	if got := s.classOf("a"); got != geoSplitClassUnknown {
 		t.Fatalf("classOf after failed probe = %q, want unknown", got)
 	}
@@ -104,9 +104,12 @@ func TestRegionStoreStaleKeep(t *testing.T) {
 	if !s.claim("a", time.Hour) {
 		t.Fatal("claim after failed probe must succeed (no fresh entry)")
 	}
-	s.release("a", geoSplitClassRU)
+	s.release("a", geoSplitClassRU, "RU")
 	if got := s.classOf("a"); got != geoSplitClassRU {
 		t.Fatalf("classOf = %q, want ru", got)
+	}
+	if got := s.countryOf("a"); got != "RU" {
+		t.Fatalf("countryOf = %q, want RU", got)
 	}
 
 	// fresh entry blocks re-claim
@@ -118,9 +121,12 @@ func TestRegionStoreStaleKeep(t *testing.T) {
 	if !s.claim("a", 0) {
 		t.Fatal("claim with zero maxAge must succeed")
 	}
-	s.release("a", geoSplitClassUnknown)
+	s.release("a", geoSplitClassUnknown, "")
 	if got := s.classOf("a"); got != geoSplitClassRU {
 		t.Fatalf("failed probe erased classification: classOf = %q, want ru", got)
+	}
+	if got := s.countryOf("a"); got != "RU" {
+		t.Fatalf("failed probe erased country: countryOf = %q, want RU", got)
 	}
 }
 
@@ -136,8 +142,24 @@ func TestRegionStoreInflightBlocksConcurrentClaim(t *testing.T) {
 	if s.claim("a", time.Hour) {
 		t.Fatal("second claim while inflight must fail")
 	}
-	s.release("a", geoSplitClassForeign)
+	s.release("a", geoSplitClassForeign, "DE")
 	if got := s.classOf("a"); got != geoSplitClassForeign {
 		t.Fatalf("classOf = %q, want foreign", got)
+	}
+	if got := s.countryOf("a"); got != "DE" {
+		t.Fatalf("countryOf = %q, want DE", got)
+	}
+}
+
+// RegionCodeOf reads the package-level globalRegionStore and uppercases the
+// stored ISO code so the UI suffix is stable regardless of probe casing.
+func TestRegionCodeOfUppercases(t *testing.T) {
+	const name = "geosplit-uppercase-probe-fixture"
+	globalRegionStore.release(name, geoSplitClassForeign, "nl")
+	if got := RegionCodeOf(name); got != "NL" {
+		t.Fatalf("RegionCodeOf = %q, want NL (uppercased)", got)
+	}
+	if got := RegionCodeOf("never-classified-fixture"); got != "" {
+		t.Fatalf("RegionCodeOf(unknown) = %q, want empty", got)
 	}
 }

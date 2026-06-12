@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"regexp"
+	"strings"
 	"sync"
 	stdatomic "sync/atomic"
 	"time"
@@ -88,6 +89,7 @@ func bucketFor(class string, preferRU bool) int {
 
 type regionEntry struct {
 	class     string
+	country   string // raw ISO code Google attributed (e.g. "RU", "DE"); "" if unknown
 	checkedAt time.Time
 }
 
@@ -112,6 +114,24 @@ func (s *regionStore) classOf(name string) string {
 	return s.entries[name].class
 }
 
+func (s *regionStore) countryOf(name string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.entries[name].country
+}
+
+// RegionCodeOf returns the uppercased ISO country code Google attributed
+// to the proxy's exit IP, or "" when it has not been classified yet (no
+// geo-split group has driven traffic through it, or every probe failed).
+//
+// Exported so the CMFA bridge (native/tunnel) can annotate proxy display
+// titles with the attributed country — e.g. "🇫🇮 Финляндия [RU]" makes it
+// visible that Google places a given server in the Russian bucket. Reads
+// the shared store, so it reflects whatever the last geo-split sweep found.
+func RegionCodeOf(name string) string {
+	return strings.ToUpper(globalRegionStore.countryOf(name))
+}
+
 // claim marks a proxy as being probed if it needs probing. It returns
 // false when the cached entry is still fresh or another worker is
 // already probing the same name.
@@ -130,15 +150,16 @@ func (s *regionStore) claim(name string, maxAge time.Duration) bool {
 
 // release stores the probe outcome. A failed probe (unknown class)
 // keeps a previously known classification: a transient Google error
-// must not reshuffle an established ordering.
-func (s *regionStore) release(name string, class string) {
+// must not reshuffle an established ordering. country is the raw ISO
+// code surfaced to the UI alongside the bucket class.
+func (s *regionStore) release(name string, class string, country string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.inflight, name)
 	if class == geoSplitClassUnknown {
 		return // retried on the next worker tick; old entry (if any) stays
 	}
-	s.entries[name] = regionEntry{class: class, checkedAt: time.Now()}
+	s.entries[name] = regionEntry{class: class, country: country, checkedAt: time.Now()}
 }
 
 type geoSplitOption func(*GeoSplit)
@@ -253,10 +274,12 @@ func (g *GeoSplit) IsL3Protocol(metadata *C.Metadata) bool {
 func (g *GeoSplit) MarshalJSON() ([]byte, error) {
 	all := []string{}
 	classifications := map[string]string{}
+	countries := map[string]string{}
 	for _, proxy := range g.GetProxies(false) {
 		name := proxy.Name()
 		all = append(all, name)
 		classifications[name] = globalRegionStore.classOf(name)
+		countries[name] = RegionCodeOf(name)
 	}
 	prefer := geoSplitClassForeign
 	if g.preferRU {
@@ -274,6 +297,7 @@ func (g *GeoSplit) MarshalJSON() ([]byte, error) {
 		"emptyFallback":   g.EmptyFallback().Name(),
 		"prefer":          prefer,
 		"classifications": classifications,
+		"countries":       countries,
 	})
 }
 
@@ -468,7 +492,7 @@ func (g *GeoSplit) classifyAll() {
 
 			before := globalRegionStore.classOf(name)
 			class, raw := probeRegion(ctx, proxy)
-			globalRegionStore.release(name, class)
+			globalRegionStore.release(name, class, raw)
 			after := globalRegionStore.classOf(name)
 
 			if after != before {
