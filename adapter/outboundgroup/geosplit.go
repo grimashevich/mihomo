@@ -376,10 +376,14 @@ func (g *GeoSplit) maybeClassify() {
 // exit IP. The transport dials *every* requested address through the
 // proxy (not a single pinned connection), so consent/captcha redirects
 // to other Google hosts still flow through the same exit.
-func probeRegion(ctx context.Context, proxy C.Proxy) string {
+//
+// Returns (class, rawCountry): class is ru/foreign/unknown, rawCountry is
+// the literal ISO code Google returned ("" when the marker was absent),
+// surfaced in the classification log line for debugging.
+func probeRegion(ctx context.Context, proxy C.Proxy) (string, string) {
 	tlsConfig, err := ca.GetTLSConfig(ca.Option{})
 	if err != nil {
-		return geoSplitClassUnknown
+		return geoSplitClassUnknown, ""
 	}
 
 	transport := &http.Transport{
@@ -399,7 +403,7 @@ func probeRegion(ctx context.Context, proxy C.Proxy) string {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, regionProbeURL, nil)
 	if err != nil {
-		return geoSplitClassUnknown
+		return geoSplitClassUnknown, ""
 	}
 	req.Header.Set("User-Agent", regionProbeUserAgent)
 	// EEA exits get a consent interstitial; this cookie keeps Google on
@@ -409,16 +413,21 @@ func probeRegion(ctx context.Context, proxy C.Proxy) string {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return geoSplitClassUnknown
+		return geoSplitClassUnknown, ""
 	}
 	defer resp.Body.Close()
 
+	// A partial body with a trailing read error is still usable: the
+	// MgUcDb marker sits near the top of the page, so we only bail when
+	// nothing at all was read. Do not "fix" this into discarding partial
+	// bodies on error.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, regionProbeMaxBody))
 	if err != nil && len(body) == 0 {
-		return geoSplitClassUnknown
+		return geoSplitClassUnknown, ""
 	}
 
-	return classifyCountry(parseGoogleCountry(body))
+	raw := parseGoogleCountry(body)
+	return classifyCountry(raw), raw
 }
 
 func (g *GeoSplit) classifyAll() {
@@ -451,7 +460,7 @@ func (g *GeoSplit) classifyAll() {
 			defer cancel()
 
 			before := globalRegionStore.classOf(name)
-			class := probeRegion(ctx, proxy)
+			class, raw := probeRegion(ctx, proxy)
 			globalRegionStore.release(name, class)
 			after := globalRegionStore.classOf(name)
 
@@ -459,7 +468,11 @@ func (g *GeoSplit) classifyAll() {
 				changedMu.Lock()
 				changed = true
 				changedMu.Unlock()
-				log.Infoln("[GeoSplit] %s classified as %q (google country)", name, after)
+				rawLabel := raw
+				if rawLabel == "" {
+					rawLabel = "?"
+				}
+				log.Infoln("[GeoSplit] %s classified as %q (google country: %s)", name, after, rawLabel)
 			} else if class == geoSplitClassUnknown {
 				log.Debugln("[GeoSplit] %s region probe failed, keeping %q", name, before)
 			}
