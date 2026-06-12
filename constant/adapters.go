@@ -29,6 +29,7 @@ const (
 	Fallback
 	URLTest
 	LoadBalance
+	GeoSplit
 
 	Shadowsocks
 	ShadowsocksR
@@ -240,6 +241,8 @@ func (at AdapterType) String() string {
 		return "URLTest"
 	case LoadBalance:
 		return "LoadBalance"
+	case GeoSplit:
+		return "GeoSplit"
 	default:
 		return "Unknown"
 	}

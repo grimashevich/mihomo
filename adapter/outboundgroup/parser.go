@@ -193,6 +193,9 @@ func ParseProxyGroup(config map[string]any, proxyMap map[string]C.Proxy, provide
 	case "load-balance":
 		strategy := parseStrategy(config)
 		return NewLoadBalance(groupOption, emptyFallback, providers, strategy)
+	case "geo-split":
+		opts := parseGeoSplitOption(config)
+		group = NewGeoSplit(groupOption, emptyFallback, providers, opts...)
 	case "relay":
 		return nil, fmt.Errorf("%w: The group [%s] with relay type was removed, please using dialer-proxy instead", errType, groupName)
 	default:
