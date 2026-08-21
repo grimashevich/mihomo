@@ -109,12 +109,51 @@ var globalRegionStore = &regionStore{
 }
 
 func (s *regionStore) classOf(name string) string {
-	if class, _, ok := externalRegion(name); ok {
+	if class, country, ok := externalRegion(name); ok {
+		s.remember(name, class, country)
 		return class
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.entries[name].class
+}
+
+// remember mirrors an external verdict into the local store, so the
+// store always holds the last decision made about a proxy no matter who
+// made it.
+//
+// This exists for the provider going quiet on a name it used to answer
+// for: the fleet feed reports "no data" (an expired verdict, a node the
+// sweep could not measure) instead of guessing, and the contract is to
+// keep the previous decision until a newer snapshot overrules it, not
+// to reshuffle the ordering on an absence. Without this the node would
+// drop straight back to bucket 2 ("not classified") and get re-probed
+// from the phone.
+//
+// External verdicts are consulted before the store on every read, so a
+// remembered entry can never shadow a fresher external one. It does
+// hold off the local probe for one regionInterval after the provider
+// last confirmed the verdict, which is by design: the feed refreshes
+// hourly, and a probe fired in between would answer a question the next
+// snapshot is about to answer better.
+//
+// checkedAt therefore tracks the last *confirmation*, not the first
+// sighting — otherwise a verdict the provider had been repeating for
+// hours would already be stale the moment it fell silent, and the probe
+// this whole mechanism avoids would fire immediately. Re-stamping is
+// rate-limited so a hot pick() path is not writing the map every call.
+func (s *regionStore) remember(name string, class string, country string) {
+	const restamp = time.Minute
+
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e, ok := s.entries[name]; ok && e.class == class && e.country == country &&
+		now.Sub(e.checkedAt) < restamp {
+		return
+	}
+	s.entries[name] = regionEntry{class: class, country: country, checkedAt: now}
 }
 
 func (s *regionStore) countryOf(name string) string {
@@ -147,6 +186,10 @@ func RegionCodeOf(name string) string {
 // datacenter is both fresher and cheaper than probing google.com through
 // every server from the phone. class must be "ru" or "foreign"; anything
 // else is treated as no verdict.
+//
+// ok=false means "no data right now", never "reclassify this". Verdicts
+// seen earlier are kept in the store (see remember), so a provider that
+// falls silent leaves the ordering it produced in place.
 type RegionProvider func(name string) (class string, country string, ok bool)
 
 // stored as a pointer so the provider can be cleared with nil, which

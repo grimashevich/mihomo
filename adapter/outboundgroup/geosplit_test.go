@@ -204,10 +204,94 @@ func TestRegionProviderOverridesStore(t *testing.T) {
 		t.Fatalf("classOf(b) = %q, want ru (local probe)", got)
 	}
 
-	// clearing the provider restores the local classification
+	// The external verdict is mirrored into the store, so removing the
+	// provider does not undo the decision it made — it stands until
+	// something measures the name again. (Before remember() existed this
+	// asserted the opposite: that the older local probe came back.)
 	SetRegionProvider(nil)
-	if got := s.classOf("a"); got != geoSplitClassRU {
-		t.Fatalf("classOf after clearing provider = %q, want ru", got)
+	if got := s.classOf("a"); got != geoSplitClassForeign {
+		t.Fatalf("classOf after clearing provider = %q, want foreign (last decision kept)", got)
+	}
+	if got := s.countryOf("a"); got != "CH" {
+		t.Fatalf("countryOf after clearing provider = %q, want CH", got)
+	}
+}
+
+// A provider answering "no data" for a name it used to classify (the
+// fleet feed reporting gemini "unknown") must not reshuffle anything:
+// the previous decision stays until the local probe is due again.
+func TestRegionProviderSilenceKeepsLastVerdict(t *testing.T) {
+	defer SetRegionProvider(nil)
+
+	s := &regionStore{
+		entries:  map[string]regionEntry{},
+		inflight: map[string]struct{}{},
+	}
+
+	answering := true
+	SetRegionProvider(func(name string) (string, string, bool) {
+		if answering && name == "a" {
+			return geoSplitClassForeign, "CH", true
+		}
+		return "", "", false
+	})
+
+	if got := s.classOf("a"); got != geoSplitClassForeign {
+		t.Fatalf("classOf while provider answers = %q, want foreign", got)
+	}
+
+	answering = false
+
+	if got := s.classOf("a"); got != geoSplitClassForeign {
+		t.Fatalf("classOf after the provider fell silent = %q, want foreign", got)
+	}
+	if got := bucketFor(s.classOf("a"), false); got != 0 {
+		t.Fatalf("bucket after the provider fell silent = %d, want 0", got)
+	}
+
+	// The verdict was confirmed moments ago, so a probe is not due yet …
+	if s.claim("a", time.Hour) {
+		t.Fatal("claim must fail while the remembered verdict is fresh")
+	}
+	// … but it is not pinned forever: once it ages past the interval the
+	// local probe takes over again.
+	if !s.claim("a", 0) {
+		t.Fatal("claim must succeed once the remembered verdict is stale")
+	}
+}
+
+// Re-confirming the same verdict keeps it fresh, so a node the feed has
+// been reporting for hours is not instantly probe-eligible the moment
+// the feed goes quiet.
+func TestRegionProviderConfirmationRestampsEntry(t *testing.T) {
+	defer SetRegionProvider(nil)
+
+	s := &regionStore{
+		entries:  map[string]regionEntry{},
+		inflight: map[string]struct{}{},
+	}
+
+	SetRegionProvider(func(name string) (string, string, bool) {
+		return geoSplitClassForeign, "CH", true
+	})
+
+	s.classOf("a")
+
+	// backdate the entry as if the verdict had first been seen long ago
+	s.mu.Lock()
+	e := s.entries["a"]
+	e.checkedAt = time.Now().Add(-2 * time.Hour)
+	s.entries["a"] = e
+	s.mu.Unlock()
+
+	s.classOf("a") // same verdict, but stale enough to be re-stamped
+
+	s.mu.Lock()
+	age := time.Since(s.entries["a"].checkedAt)
+	s.mu.Unlock()
+
+	if age > time.Minute {
+		t.Fatalf("re-confirmed verdict kept a %s old timestamp, want it re-stamped", age)
 	}
 }
 
