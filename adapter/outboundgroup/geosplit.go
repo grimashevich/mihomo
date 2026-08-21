@@ -109,12 +109,18 @@ var globalRegionStore = &regionStore{
 }
 
 func (s *regionStore) classOf(name string) string {
+	if class, _, ok := externalRegion(name); ok {
+		return class
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.entries[name].class
 }
 
 func (s *regionStore) countryOf(name string) string {
+	if _, country, ok := externalRegion(name); ok {
+		return country
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.entries[name].country
@@ -132,10 +138,56 @@ func RegionCodeOf(name string) string {
 	return strings.ToUpper(globalRegionStore.countryOf(name))
 }
 
+// RegionProvider answers "how is this proxy classified" from outside the
+// core. It returns (class, country, ok); ok=false means "no verdict for
+// this name", which leaves the local Google probe in charge.
+//
+// CMFA installs one backed by the fleet-status service (an hourly
+// server-side Gemini/YouTube sweep): a verdict measured from a real
+// datacenter is both fresher and cheaper than probing google.com through
+// every server from the phone. class must be "ru" or "foreign"; anything
+// else is treated as no verdict.
+type RegionProvider func(name string) (class string, country string, ok bool)
+
+// stored as a pointer so the provider can be cleared with nil, which
+// atomic.Value cannot express for a func type.
+var regionProvider stdatomic.Pointer[RegionProvider]
+
+// SetRegionProvider installs (nil removes) the external classification
+// source. Safe to call at any time; the next classOf/claim picks it up.
+func SetRegionProvider(provider RegionProvider) {
+	if provider == nil {
+		regionProvider.Store(nil)
+		return
+	}
+	regionProvider.Store(&provider)
+}
+
+// externalRegion asks the installed provider, validating its class so a
+// buggy provider cannot inject a third bucket value into the ordering.
+func externalRegion(name string) (string, string, bool) {
+	provider := regionProvider.Load()
+	if provider == nil {
+		return "", "", false
+	}
+
+	class, country, ok := (*provider)(name)
+	if !ok || (class != geoSplitClassRU && class != geoSplitClassForeign) {
+		return "", "", false
+	}
+
+	return class, country, true
+}
+
 // claim marks a proxy as being probed if it needs probing. It returns
 // false when the cached entry is still fresh or another worker is
 // already probing the same name.
 func (s *regionStore) claim(name string, maxAge time.Duration) bool {
+	if _, _, ok := externalRegion(name); ok {
+		// an external verdict covers this proxy: probing google.com
+		// through it would only spend traffic to be overruled
+		return false
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, busy := s.inflight[name]; busy {

@@ -163,3 +163,72 @@ func TestRegionCodeOfUppercases(t *testing.T) {
 		t.Fatalf("RegionCodeOf(unknown) = %q, want empty", got)
 	}
 }
+
+func TestRegionProviderOverridesStore(t *testing.T) {
+	defer SetRegionProvider(nil)
+
+	s := &regionStore{
+		entries:  map[string]regionEntry{},
+		inflight: map[string]struct{}{},
+	}
+
+	// locally probed as RU
+	if !s.claim("a", time.Hour) {
+		t.Fatal("first claim must succeed")
+	}
+	s.release("a", geoSplitClassRU, "RU")
+
+	SetRegionProvider(func(name string) (string, string, bool) {
+		if name == "a" {
+			return geoSplitClassForeign, "CH", true
+		}
+		return "", "", false
+	})
+
+	if got := s.classOf("a"); got != geoSplitClassForeign {
+		t.Fatalf("classOf with provider = %q, want foreign (provider wins)", got)
+	}
+	if got := s.countryOf("a"); got != "CH" {
+		t.Fatalf("countryOf with provider = %q, want CH", got)
+	}
+	if s.claim("a", 0) {
+		t.Fatal("claim must fail while the provider answers for the name")
+	}
+
+	// names the provider does not answer for keep using the local store
+	if !s.claim("b", time.Hour) {
+		t.Fatal("claim for an unprovided name must succeed")
+	}
+	s.release("b", geoSplitClassRU, "RU")
+	if got := s.classOf("b"); got != geoSplitClassRU {
+		t.Fatalf("classOf(b) = %q, want ru (local probe)", got)
+	}
+
+	// clearing the provider restores the local classification
+	SetRegionProvider(nil)
+	if got := s.classOf("a"); got != geoSplitClassRU {
+		t.Fatalf("classOf after clearing provider = %q, want ru", got)
+	}
+}
+
+func TestRegionProviderRejectsInvalidClass(t *testing.T) {
+	defer SetRegionProvider(nil)
+
+	s := &regionStore{
+		entries:  map[string]regionEntry{},
+		inflight: map[string]struct{}{},
+	}
+
+	// ok=true with a class outside {ru, foreign} must be ignored, not
+	// injected as a third bucket value
+	SetRegionProvider(func(string) (string, string, bool) {
+		return "somewhere", "XX", true
+	})
+
+	if got := s.classOf("a"); got != geoSplitClassUnknown {
+		t.Fatalf("classOf with invalid provider class = %q, want unknown", got)
+	}
+	if !s.claim("a", time.Hour) {
+		t.Fatal("claim must succeed when the provider verdict is invalid")
+	}
+}
