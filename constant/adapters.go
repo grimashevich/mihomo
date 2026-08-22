@@ -31,6 +31,7 @@ const (
 	URLTest
 	LoadBalance
 	GeoSplit
+	GeminiPriority
 
 	Shadowsocks
 	ShadowsocksR
@@ -252,6 +253,8 @@ func (at AdapterType) String() string {
 		return "LoadBalance"
 	case GeoSplit:
 		return "GeoSplit"
+	case GeminiPriority:
+		return "GeminiPriority"
 	default:
 		return "Unknown"
 	}
