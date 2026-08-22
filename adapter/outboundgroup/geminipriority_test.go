@@ -179,3 +179,30 @@ func TestGeminiAvailableWithoutProvider(t *testing.T) {
 		t.Error("geminiAvailable() = true with no provider installed, want false")
 	}
 }
+
+func TestFirstIndexOf(t *testing.T) {
+	names := []string{"NL", "DE", "NL", "FI"}
+
+	tests := []struct {
+		name   string
+		lookup string
+		want   int
+	}{
+		{"present once", "FI", 3},
+		// Review round 1 (MAJOR): resolving a repeated name to its last
+		// occurrence would pin the LOWEST-ranked copy, since the list is
+		// in priority order. fallback returns on its first match; so does
+		// this.
+		{"repeated name resolves to the highest ranked", "NL", 0},
+		{"absent", "PL", -1},
+		{"empty lookup is not a pin", "", -1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := firstIndexOf(names, tt.lookup); got != tt.want {
+				t.Errorf("firstIndexOf(%q) = %d, want %d", tt.lookup, got, tt.want)
+			}
+		})
+	}
+}

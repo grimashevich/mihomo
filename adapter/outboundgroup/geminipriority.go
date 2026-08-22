@@ -166,6 +166,24 @@ type geminiCandidate struct {
 	gemini bool
 }
 
+// firstIndexOf returns the index of the first proxy with this name, or
+// -1. First, not last: the list is in priority order, so if a name ever
+// appears twice the higher-ranked one is the one the user meant — and
+// that also matches fallback, which returns on its first match.
+func firstIndexOf(names []string, name string) int {
+	if name == "" {
+		return -1
+	}
+
+	for i, candidate := range names {
+		if candidate == name {
+			return i
+		}
+	}
+
+	return -1
+}
+
 // pickGeminiPriority implements the documented three-step rule.
 //
 // selectedIdx is the index of the manually pinned server, or -1 when
@@ -211,18 +229,17 @@ func (g *GeminiPriority) findProxy(touch bool) C.Proxy {
 	}
 
 	candidates := make([]geminiCandidate, len(proxies))
-	selectedIdx := -1
+	names := make([]string, len(proxies))
 
 	for i, proxy := range proxies {
-		if len(g.selected) > 0 && proxy.Name() == g.selected {
-			selectedIdx = i
-		}
-
+		names[i] = proxy.Name()
 		candidates[i] = geminiCandidate{
 			alive:  proxy.AliveForTestUrl(g.testUrl),
-			gemini: geminiAvailable(proxy.Name()),
+			gemini: geminiAvailable(names[i]),
 		}
 	}
+
+	selectedIdx := firstIndexOf(names, g.selected)
 
 	idx, clearSelected := pickGeminiPriority(candidates, selectedIdx)
 
