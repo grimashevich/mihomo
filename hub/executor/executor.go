@@ -102,8 +102,8 @@ func ApplyConfig(cfg *config.Config, force bool) {
 	updateSniffer(cfg.Sniffer)
 	updateHosts(cfg.Hosts)
 	updateGeneral(cfg.General, true)
-	updateNTP(cfg.NTP)
 	updateDNS(cfg.DNS, cfg.General.IPv6)
+	updateNTP(cfg.NTP) // initialize NTP after DNS because an NTP server may be a hostname.
 	updateListeners(cfg.General, cfg.Listeners, force)
 	updateTun(cfg.General) // tun should not care "force"
 	updateIPTables(cfg)
@@ -242,7 +242,7 @@ func updateDNS(c *config.DNS, generalIPv6 bool) {
 		resolver.DefaultService = nil
 		resolver.ProxyServerHostResolver = nil
 		resolver.DirectHostResolver = nil
-		dns.ReCreateServer("", nil)
+		dns.ReCreateServer("", nil, nil)
 		return
 	}
 
@@ -254,6 +254,7 @@ func updateDNS(c *config.DNS, generalIPv6 bool) {
 		IPv6Timeout:          c.IPv6Timeout,
 		FallbackIPFilter:     c.FallbackIPFilter,
 		FallbackDomainFilter: c.FallbackDomainFilter,
+		FallbackLazyQuery:    c.FallbackLazyQuery,
 		Default:              c.DefaultNameserver,
 		Policy:               c.NameServerPolicy,
 		ProxyServer:          c.ProxyServerNameserver,
@@ -297,7 +298,9 @@ func updateDNS(c *config.DNS, generalIPv6 bool) {
 		resolver.DirectHostResolver = r.Resolver
 	}
 
-	dns.ReCreateServer(c.Listen, s)
+	lc := inbound.NewListenConfig()
+	lc.SetRouteMark(c.ListenRoutingMark)
+	dns.ReCreateServer(c.Listen, lc, s)
 }
 
 func updateHosts(tree *trie.DomainTrie[resolver.HostValue]) {

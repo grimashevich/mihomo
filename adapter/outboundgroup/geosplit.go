@@ -257,18 +257,14 @@ func (s *regionStore) release(name string, class string, country string) {
 	s.entries[name] = regionEntry{class: class, country: country, checkedAt: time.Now()}
 }
 
-type geoSplitOption func(*GeoSplit)
-
-func geoSplitWithPreferRU(preferRU bool) geoSplitOption {
-	return func(g *GeoSplit) {
-		g.preferRU = preferRU
-	}
-}
-
-func geoSplitWithRegionInterval(interval time.Duration) geoSplitOption {
-	return func(g *GeoSplit) {
-		g.regionInterval = interval
-	}
+// GeoSplitOption mirrors the per-type option structs upstream introduced
+// for every other group (URLTestOption, LoadBalanceOption, ...). Decoding
+// through the shared `group`-tagged decoder — rather than reading the raw
+// map ourselves — is what makes `region-check-interval: "60"` work: the
+// decoder runs with WeaklyTypedInput, so a YAML string coerces to int.
+type GeoSplitOption struct {
+	Prefer              string `group:"prefer,omitempty"`
+	RegionCheckInterval int    `group:"region-check-interval,omitempty"`
 }
 
 type GeoSplit struct {
@@ -612,27 +608,16 @@ func (g *GeoSplit) classifyAll() {
 	}
 }
 
-func parseGeoSplitOption(config map[string]any) []geoSplitOption {
-	opts := []geoSplitOption{}
-
-	preferRU := false
-	if elm, ok := config["prefer"]; ok {
-		if prefer, ok := elm.(string); ok && prefer == geoSplitClassRU {
-			preferRU = true
-		}
-	}
-	opts = append(opts, geoSplitWithPreferRU(preferRU))
-
-	if elm, ok := config["region-check-interval"]; ok {
-		if interval, ok := elm.(int); ok && interval > 0 {
-			opts = append(opts, geoSplitWithRegionInterval(time.Duration(interval)*time.Second))
-		}
+func NewGeoSplit(option GroupCommonOption, geoSplitOption GeoSplitOption, emptyFallback C.Proxy, providers []P.ProxyProvider) (*GeoSplit, error) {
+	if emptyFallback == nil {
+		return nil, errors.New("empty fallback proxy not exist")
 	}
 
-	return opts
-}
+	regionInterval := defaultRegionCheckInterval
+	if geoSplitOption.RegionCheckInterval > 0 {
+		regionInterval = time.Duration(geoSplitOption.RegionCheckInterval) * time.Second
+	}
 
-func NewGeoSplit(option *GroupCommonOption, emptyFallback C.Proxy, providers []P.ProxyProvider, options ...geoSplitOption) *GeoSplit {
 	geoSplit := &GeoSplit{
 		GroupBase: NewGroupBase(GroupBaseOption{
 			Name:           option.Name,
@@ -651,14 +636,13 @@ func NewGeoSplit(option *GroupCommonOption, emptyFallback C.Proxy, providers []P
 		disableUDP:     option.DisableUDP,
 		testUrl:        option.URL,
 		expectedStatus: option.ExpectedStatus,
-		regionInterval: defaultRegionCheckInterval,
+		// only the exact class token flips the ordering; anything else
+		// (empty, "foreign", a typo) keeps the default foreign-first.
+		preferRU:       geoSplitOption.Prefer == geoSplitClassRU,
+		regionInterval: regionInterval,
 	}
 
-	for _, opt := range options {
-		opt(geoSplit)
-	}
-
-	return geoSplit
+	return geoSplit, nil
 }
 
 var _ ProxyGroup = (*GeoSplit)(nil)
